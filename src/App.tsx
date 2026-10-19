@@ -2,7 +2,8 @@ import { useCallback, useEffect, useMemo, useState, type ReactNode } from "react
 import { api, bootSession, configMissing, errorText, type SaasStats } from "./api";
 import { ShellContext, useRoute, type Shell } from "./shell";
 import {
-  BrandMark, BuildingIcon, CrownIcon, HomeIcon, InboxIcon, LayersIcon, MegaphoneIcon, MenuIcon, ReceiptIcon, RefreshIcon, ScrollIcon, SettingsIcon,
+  AlertIcon, BrandMark, BuildingIcon, CrownIcon, HomeIcon, InboxIcon, LayersIcon, MegaphoneIcon, MenuIcon, ReceiptIcon, RefreshIcon, ScrollIcon,
+  SettingsIcon,
 } from "./components/Icons";
 import Companies from "./components/Companies";
 import CreateCompany from "./components/CreateCompany";
@@ -15,6 +16,7 @@ import Plans from "./pages/Plans";
 import Announcements from "./pages/Announcements";
 import Settings from "./pages/Settings";
 import Audit from "./pages/Audit";
+import Errors from "./pages/Errors";
 
 type Boot = { state: "loading" } | { state: "error"; message: string } | { state: "ready"; email: string };
 
@@ -42,6 +44,7 @@ const NAV: Array<{ title: string; items: NavItem[] }> = [
       { path: "announcements", label: "الإعلانات", icon: MegaphoneIcon },
       { path: "settings", label: "الإعدادات", icon: SettingsIcon },
       { path: "audit", label: "سجل العمليات", icon: ScrollIcon },
+      { path: "errors", label: "أخطاء النظام", icon: AlertIcon },
     ],
   },
 ];
@@ -57,6 +60,7 @@ const TITLES: Record<string, string> = {
   announcements: "إعلانات المنصة",
   settings: "إعدادات المنصة",
   audit: "سجل العمليات",
+  errors: "أخطاء النظام",
 };
 
 /**
@@ -147,6 +151,7 @@ export default function App() {
   else if (page === "announcements") body = <Announcements />;
   else if (page === "settings") body = <Settings />;
   else if (page === "audit") body = <Audit />;
+  else if (page === "errors") body = <Errors />;
   else body = <Home />;
 
   const activeNav = page === "company" ? "companies" : page;

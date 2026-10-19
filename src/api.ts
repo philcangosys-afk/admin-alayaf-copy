@@ -429,8 +429,33 @@ const ERRORS: Record<string, string> = {
   REQUEST_STATUS_INVALID: "حالة الطلب غير صحيحة",
   REQUEST_NOT_OPEN: "الطلب لم يعد مفتوحًا",
   "invalid input syntax": "قيمة غير صحيحة في أحد الحقول الرقمية أو التواريخ",
+  platform_list_error: "دوال سجل الأخطاء غير مطبّقة على القاعدة؛ طبّق S16-saas-error-logging.sql أولًا",
+  ERROR_FILTER_REQUIRED: "حدّد الخطأ أو رقمه أو المنشأة",
+  "statement timeout": "استغرق الاستعلام وقتًا طويلًا؛ اختر مدة أقصر أو صفِّ بالمصدر",
   "Could not find the function": "دوال S15 غير مطبّقة على القاعدة؛ طبّق S15-saas-subscriptions.sql أولًا",
 };
+
+// S16: أخطاء النظام (app_error_logs)
+export type ErrorSource = "web" | "portal" | "edge";
+export type ErrorLevel = "warn" | "error" | "fatal";
+export type ErrorFilter = { days?: number; source?: ErrorSource | ""; company_id?: string; q?: string };
+export type ErrorGroup = {
+  fingerprint: string; count: number; users: number; companies: number; company_names: string[];
+  first_seen: string; last_seen: string; level: ErrorLevel; source: ErrorSource; event: string;
+  error_type: string; message: string; route: string; app_version: string; last_request_id: string;
+};
+export type ErrorGroupsResult = {
+  days: number; total: number; last_24h: number; groups_total: number; companies_total: number; groups: ErrorGroup[];
+};
+export type ErrorRow = {
+  id: number; created_at: string; last_at: string; source: ErrorSource; level: ErrorLevel; event: string; request_id: string;
+  repeats: number; repeat_ids: string[]; matched_repeat: boolean;
+  route: string; app_version: string; error_type: string; message: string; stack: string;
+  context: Record<string, string | number | boolean>; user_agent: string; client_ip: string; fingerprint: string;
+  company_id: string | null; company_code: number | null; company_name: string | null;
+  user_id: string | null; user_email: string | null;
+};
+export const ERROR_SOURCE_LABELS: Record<ErrorSource, string> = { web: "النظام", portal: "بوابة الموظف", edge: "دوال الخادم" };
 
 export function errorText(error: unknown): string {
   const message = String((error as { message?: string } | null)?.message ?? error ?? "");
@@ -466,6 +491,10 @@ export const api = {
   audit: (companyId: string | null, limit = 200) => rpc<AuditRow[]>("platform_list_audit", { p_company: companyId, p_limit: limit }),
   // S15: الاشتراكات
   saasStats: () => rpc<SaasStats>("platform_saas_stats"),
+  // S16: أخطاء النظام
+  errorGroups: (filter: ErrorFilter) => rpc<ErrorGroupsResult>("platform_list_error_groups", { p: filter }),
+  errors: (filter: { fingerprint?: string; request_id?: string; company_id?: string; days?: number }) =>
+    rpc<ErrorRow[]>("platform_list_errors", { p: filter }),
   listTenants: (filter: TenantFilter) => rpc<TenantRow[]>("platform_list_tenants", { p_filter: filter }),
   getSubscription: (id: string) => rpc<SubscriptionDetails>("platform_get_subscription", { p_company: id }),
   extend: (id: string, days: number, note: string) =>
@@ -575,6 +604,7 @@ export const ACTION_LABELS: Record<string, string> = {
   company_updated: "تعديل بيانات",
   company_profile_updated: "تعديل من المنشأة",
   owner_linked: "ربط صاحب المنشأة",
+  company_data_reset: "تفريغ بيانات المنشأة",
   member_active: "تفعيل عضو",
   member_disabled: "تعطيل عضو",
   member_removed: "إزالة عضو",

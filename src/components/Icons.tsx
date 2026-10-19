@@ -31,6 +31,7 @@ export const LockIcon = svg(<><rect x="4" y="11" width="16" height="10" rx="2" /
 export const GiftIcon = svg(<><rect x="3" y="8" width="18" height="5" rx="1" /><path d="M5 13v8h14v-8M12 8v13" /><path d="M12 8S10.5 3 8 4s-.5 4 4 4ZM12 8s1.5-5 4-4 .5 4-4 4Z" /></>);
 export const BanIcon = svg(<><circle cx="12" cy="12" r="9" /><path d="m5.6 5.6 12.8 12.8" /></>);
 export const CoinsIcon = svg(<><ellipse cx="9" cy="7" rx="6" ry="3" /><path d="M3 7v5c0 1.7 2.7 3 6 3s6-1.3 6-3V7" /><path d="M15 11.5c3.3 0 6 1.3 6 3v4c0 1.7-2.7 3-6 3-2 0-3.8-.5-4.9-1.3" /></>);
+export const AlertIcon = svg(<><path d="M10.3 3.9 1.8 18a2 2 0 0 0 1.7 3h17a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0Z" /><path d="M12 9v4M12 17h.01" /></>);
 export const FileIcon = svg(<><path d="M14 3H6v18h12V7l-4-4Z" /><path d="M14 3v4h4M9 13h6M9 17h4" /></>);
 
 /** شعار المنصة: نجمة ثمانية (نفس رمز صفحات الدخول) */
