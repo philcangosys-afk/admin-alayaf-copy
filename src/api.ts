@@ -1,20 +1,52 @@
 import { createClient, type SupabaseClient } from "@supabase/supabase-js";
 
 /**
- * إعدادات اللوحة من .env.local (هذا الجهاز فقط).
- * الرابط والمفتاح العام فقط يصلان إلى المتصفح؛ بريد مدير المنصة وكلمة مروره يقرؤهما خادم التطوير المحلي
- * (vite.config.ts) ويعطي المتصفح رموز الجلسة فقط.
+ * إعدادات اللوحة. الرابط والمفتاح العام فقط يصلان إلى كود المتصفح.
+ * - على هذا الجهاز (npm run dev على 127.0.0.1): دخول تلقائي. بريد مدير المنصة وكلمة مروره في .env.local
+ *   يقرؤهما خادم التطوير المحلي (vite.config.ts) ويعطي المتصفح رموز الجلسة فقط.
+ * - على الاستضافة (Netlify): لا خادم محلي، فيدخل المدير ببريده وكلمة مروره من شاشة الدخول. لا كلمة مرور في كود اللوحة.
+ * في الحالتين الصلاحية تحسمها دوال platform_* في قاعدة البيانات (ترفض أي حساب ليس في platform_admins).
  */
 export const config = {
   url: String(import.meta.env.VITE_SUPABASE_URL ?? "").trim(),
   anonKey: String(import.meta.env.VITE_SUPABASE_ANON_KEY ?? "").trim(),
 };
 
+/**
+ * اللوحة مفتوحة من خادم التطوير على هذا الجهاز (دخول تلقائي)، أو نسخة مبنية (شاشة دخول).
+ * النسخة المبنية (npm run build) تطلب الدخول دائمًا، حتى لو فُتحت على هذا الجهاز.
+ */
+export const isLocalPanel = import.meta.env.DEV && ["127.0.0.1", "localhost"].includes(window.location.hostname);
+
+const STORAGE_KEY = "platform-admin-session";
+/**
+ * على هذا الجهاز: الجلسة تبقى بعد إغلاق المتصفح (localStorage).
+ * المنشورة: محفوظة في التبويب فقط (sessionStorage)، فلا يأخذها تبويب جديد.
+ * المتصفح قد يعيدها عند استرجاع تبويب مغلق، فالذي ينهيها فعلًا هو «تسجيل الخروج».
+ */
+const sessionStore = (): Storage => (isLocalPanel ? window.localStorage : window.sessionStorage);
+
+/** مسح جلسة اللوحة من هذا المتصفح مباشرة (حين لا يكملها Supabase بنفسه) */
+export function purgeStoredSession() {
+  for (const key of [STORAGE_KEY, `${STORAGE_KEY}-user`, `${STORAGE_KEY}-code-verifier`]) {
+    try {
+      sessionStore().removeItem(key);
+    } catch {
+      // التخزين غير متاح: لا جلسة محفوظة أصلًا
+    }
+  }
+}
+
 export const configMissing = (): string[] =>
   [
     !config.url && "VITE_SUPABASE_URL",
     !config.anonKey && "VITE_SUPABASE_ANON_KEY",
   ].filter(Boolean) as string[];
+
+export const configMissingText = (missing: string[]) =>
+  isLocalPanel
+    ? `أكمل ملف .env.local: ${missing.join("، ")}`
+    : `أضف في Netlify (Site configuration ← Environment variables): ${missing.join("، ")}، ثم أعد النشر`;
 
 type LocalReply = { error?: string; message?: string; missing?: string[]; email?: string; access_token?: string; refresh_token?: string };
 
@@ -36,14 +68,34 @@ const localErrorText = (reply: LocalReply) => {
   return "شغّل اللوحة بالأمر npm run dev (خادم اللوحة المحلي غير متاح)";
 };
 
+type BootResult = { ok: true; email: string } | { ok: false; message: string; login?: boolean };
+
 /**
- * الدخول التلقائي: الجلسة المحفوظة إن كانت لنفس البريد المضبوط، وإلا جلسة جديدة من الخادم المحلي.
+ * بداية الجلسة.
+ * - على هذا الجهاز: الجلسة المحفوظة إن كانت لنفس البريد المضبوط، وإلا جلسة جديدة من الخادم المحلي.
+ * - على الاستضافة: الجلسة المحفوظة في هذا المتصفح إن وُجدت، وإلا شاشة الدخول (login: true).
  * مشتركة بين الاستدعاءات (StrictMode يشغّل التأثير مرتين) فلا يتكرر الدخول.
  */
-let bootPromise: Promise<{ ok: true; email: string } | { ok: false; message: string }> | null = null;
+let bootPromise: Promise<BootResult> | null = null;
 export function bootSession() {
   if (!bootPromise) {
-    bootPromise = (async () => {
+    bootPromise = (async (): Promise<BootResult> => {
+      if (!isLocalPanel) {
+        // نسخة سابقة كانت تحفظ في localStorage: لا يبقى منها شيء في هذا المتصفح
+        try {
+          window.localStorage.removeItem(STORAGE_KEY);
+          window.localStorage.removeItem(`${STORAGE_KEY}-user`);
+        } catch {
+          // التخزين غير متاح
+        }
+        const { data, error } = await supabase().auth.getSession();
+        // جلسة مرفوضة (رمز تجديد غير صالح): Supabase مسحها، فشاشة الدخول
+        if (error && isSessionError(error)) return { ok: false, message: "انتهت الجلسة. ادخل مرة أخرى.", login: true };
+        // تعذر التجديد (اتصال): شاشة خطأ فيها «إعادة المحاولة» و«تسجيل الخروج»، لا شاشة دخول والجلسة باقية
+        if (error) return { ok: false, message: `تعذر التحقق من الجلسة: ${error.message || "خطأ في الاتصال"}` };
+        if (!data.session) return { ok: false, message: "", login: true };
+        return { ok: true, email: String(data.session.user.email ?? "").toLowerCase() };
+      }
       const configured = await localCall("/__platform/config", "GET");
       if (!configured.ok) return { ok: false as const, message: localErrorText(configured) };
       if ((configured.missing ?? []).length) return { ok: false as const, message: localErrorText(configured) };
@@ -52,7 +104,7 @@ export function bootSession() {
       const { data } = await client.auth.getSession();
       const currentEmail = data.session?.user.email?.toLowerCase() ?? "";
       if (data.session && currentEmail === adminEmail) return { ok: true as const, email: adminEmail };
-      if (data.session) await client.auth.signOut();
+      if (data.session) await client.auth.signOut({ scope: "local" });
       const reply = await localCall("/__platform/session", "POST");
       if (!reply.ok || !reply.access_token || !reply.refresh_token) return { ok: false as const, message: localErrorText(reply) };
       const { error } = await client.auth.setSession({ access_token: reply.access_token, refresh_token: reply.refresh_token });
@@ -65,11 +117,77 @@ export function bootSession() {
   return bootPromise;
 }
 
+const signInErrorText = (error: { message?: string; status?: number; code?: string } | null) => {
+  const message = String(error?.message ?? "");
+  const code = String(error?.code ?? "");
+  if (code === "invalid_credentials" || /invalid login credentials/i.test(message)) return "البريد أو كلمة المرور غير صحيحة";
+  if (code === "email_not_confirmed" || /email not confirmed/i.test(message)) return "هذا البريد غير مؤكد في Supabase (Authentication ← Users)";
+  if (error?.status === 429 || /rate limit|too many/i.test(message)) return "محاولات دخول كثيرة. انتظر بضع دقائق ثم أعد المحاولة";
+  if (/fetch|network/i.test(message)) return "تعذر الاتصال بـ Supabase؛ تحقق من الإنترنت";
+  return `تعذر الدخول: ${message || "خطأ غير معروف"}`;
+};
+
+/** الدخول من شاشة الدخول (الاستضافة). كلمة المرور تذهب إلى Supabase مباشرة ولا تُحفظ في اللوحة */
+export async function signInPanel(email: string, password: string): Promise<{ ok: true; email: string } | { ok: false; message: string }> {
+  const cleanEmail = email.trim().toLowerCase();
+  if (!cleanEmail || !password) return { ok: false, message: "اكتب البريد الإلكتروني وكلمة المرور" };
+  try {
+    const { data, error } = await supabase().auth.signInWithPassword({ email: cleanEmail, password });
+    if (error || !data.session) return { ok: false, message: signInErrorText(error) };
+    bootPromise = null;
+    return { ok: true, email: String(data.user?.email ?? cleanEmail).toLowerCase() };
+  } catch {
+    return { ok: false, message: "تعذر الاتصال بـ Supabase؛ تحقق من الإنترنت" };
+  }
+}
+
+/**
+ * تسجيل الخروج من هذا المتصفح فقط (لا يُنهي جلسات مدير المنصة على أجهزة أخرى).
+ * إن تعذر على Supabase إنهاؤها (اتصال أو خطأ خادم) تُمسح من هذا المتصفح مباشرة، فلا تعود عند فتح الرابط.
+ */
+export async function signOutPanel() {
+  bootPromise = null;
+  let failed = false;
+  try {
+    const { error } = await supabase().auth.signOut({ scope: "local" });
+    failed = Boolean(error);
+  } catch {
+    failed = true;
+  }
+  if (failed) {
+    purgeStoredSession();
+    try {
+      // بلا جلسة محفوظة: يمسح ما في الذاكرة ويبلّغ التبويبات الأخرى
+      await supabase().auth.signOut({ scope: "local" });
+    } catch {
+      // المسح تم أعلاه
+    }
+  }
+}
+
+/** خطأ سببه الجلسة نفسها (منتهية أو مرفوضة أو غير موجودة)، لا الاتصال أو الخادم */
+export const isSessionError = (error: unknown) => {
+  const e = (error ?? {}) as { message?: string; code?: string; name?: string };
+  const code = String(e.code ?? "");
+  const message = String(e.message ?? "");
+  return /^PGRST30[123]$/.test(code)
+    || e.name === "AuthSessionMissingError"
+    || (code === "42501" && /permission denied for function/i.test(message))
+    || /jwt expired|invalid jwt|invalid refresh token|refresh token not found/i.test(message);
+};
+
 let client: SupabaseClient | null = null;
 export function supabase(): SupabaseClient {
   if (!client) {
     client = createClient(config.url, config.anonKey, {
-      auth: { persistSession: true, autoRefreshToken: true, storageKey: "platform-admin-session" },
+      auth: {
+        persistSession: true,
+        autoRefreshToken: true,
+        storageKey: STORAGE_KEY,
+        storage: sessionStore(),
+        // اللوحة لا تستقبل روابط دخول: لا تُقبل جلسة من رابط (#access_token=...)
+        detectSessionInUrl: false,
+      },
     });
   }
   return client;
@@ -413,6 +531,12 @@ const ERRORS: Record<string, string> = {
   PLAN_CODE_INVALID: "رمز الباقة: حروف إنجليزية صغيرة وأرقام و - أو _ (من 2 إلى 30)",
   PLAN_NAME_REQUIRED: "اسم الباقة بالعربية مطلوب",
   PLAN_MODULE_INVALID: "قسم غير معروف في الباقة",
+  // S19: أقسام الباقة واستثناء المنشأة
+  PLAN_HOTEL_REQUIRES_ACCOUNTING: "الحجوزات إضافة على المحاسبة والمالية؛ اختر المحاسبة والمالية معها",
+  MODULE_HOTEL_REQUIRES_ACCOUNTING: "الحجوزات تتطلب المحاسبة والمالية للمنشأة نفسها",
+  MODULE_OVERRIDES_INVALID: "قيم الاستثناء غير صحيحة",
+  MODULE_CODE_INVALID: "قسم غير معروف",
+  platform_get_company_modules: "دوال الأقسام غير مطبّقة على القاعدة؛ طبّق S19-saas-company-modules.sql أولًا",
   PLAN_FEATURES_INVALID: "المزايا 20 سطرًا على الأكثر",
   PLAN_LIMIT_INVALID: "الحدود أرقام موجبة (أو فارغة = بلا حد)",
   PLAN_IS_DEFAULT: "هذه باقة التجربة الافتراضية؛ غيّر الباقة الافتراضية في الإعدادات قبل تعطيلها",
@@ -516,6 +640,10 @@ export const api = {
     rpc<Invoice[]>("platform_list_billing", { p_kind: status === "all" ? "invoices" : status, p_limit: limit }),
   listPayments: (limit = 500) => rpc<Payment[]>("platform_list_billing", { p_kind: "payments", p_limit: limit }),
   listPlans: () => rpc<Plan[]>("platform_list_plans"),
+  // S19: أقسام المنشأة واستثناؤها (null أو غياب المفتاح = حسب الباقة)
+  getCompanyModules: (id: string) => rpc<CompanyModules>("platform_get_company_modules", { p_company: id }),
+  setCompanyModules: (id: string, overrides: Partial<Record<ModuleCode, boolean | null>>, note: string) =>
+    rpc<CompanyModules>("platform_set_company_modules", { p_company: id, p_overrides: overrides, p_note: note }),
   savePlan: (p: Record<string, unknown>) => rpc<Plan[]>("platform_save_plan", { p }),
   getSettings: () => rpc<PlatformSettings>("platform_get_settings"),
   saveSettings: (p: Partial<PlatformSettings>) => rpc<PlatformSettings>("platform_save_settings", { p }),
@@ -563,18 +691,26 @@ export const STATE_TONE: Record<SubState, "info" | "ok" | "warn" | "danger" | "m
   none: "muted",
 };
 
-export const MODULES: Array<{ code: string; label: string }> = [
-  { code: "sales", label: "المبيعات" },
-  { code: "purchases", label: "المشتريات" },
-  { code: "inventory", label: "المخزون" },
-  { code: "accounting", label: "المحاسبة" },
-  { code: "crm", label: "العملاء والموردون" },
-  { code: "hr", label: "الموارد البشرية" },
-  { code: "payroll", label: "الرواتب" },
-  { code: "tasks", label: "المهام والمشاريع" },
-  { code: "fleet", label: "الأسطول" },
-  { code: "support", label: "الدعم الفني" },
+/**
+ * S19: أقسام الباقة ثلاثة. الحجوزات إضافة على المحاسبة والمالية (لا تعمل بدونها).
+ * المتاح لكل منشأة دائمًا: لوحة التحكم، والإعدادات، والمستخدمون والأدوار، والأسطول، والمهام، والدعم، والاشتراك.
+ */
+export type ModuleCode = "accounting" | "hr" | "hotel";
+export const MODULES: Array<{ code: ModuleCode; label: string; hint: string }> = [
+  { code: "accounting", label: "المحاسبة والمالية", hint: "المبيعات والمشتريات والمخزون والعملاء والموردون والحسابات والضرائب والأصول" },
+  { code: "hr", label: "الموارد البشرية", hint: "الموظفون والحضور والإجازات والرواتب وبوابة الموظف" },
+  { code: "hotel", label: "الحجوزات", hint: "الفنادق والشقق: الوحدات والحجز والاستقبال والمغادرة؛ تتطلب المحاسبة والمالية" },
 ];
+export const moduleLabel = (code: string) => MODULES.find((m) => m.code === code)?.label ?? code;
+
+/** S19: أقسام منشأة: أقسام باقتها مع استثنائها */
+export type CompanyModules = {
+  plan_code: string | null;
+  plan_name: string | null;
+  plan_modules: ModuleCode[];
+  overrides: Partial<Record<ModuleCode, boolean>>;
+  modules: ModuleCode[];
+};
 
 export const PAYMENT_METHODS: Array<{ code: string; label: string }> = [
   { code: "bank_transfer", label: "تحويل بنكي" },
@@ -627,6 +763,7 @@ export const ACTION_LABELS: Record<string, string> = {
   payment_voided: "إلغاء دفعة",
   adjustment_recorded: "تسوية رصيد",
   plan_saved: "حفظ باقة",
+  company_modules_changed: "تغيير أقسام المنشأة",
   settings_saved: "حفظ الإعدادات",
   announcement_saved: "حفظ إعلان",
   announcement_deleted: "حذف إعلان",

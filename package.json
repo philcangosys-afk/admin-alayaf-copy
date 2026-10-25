@@ -3,10 +3,11 @@
   "private": true,
   "version": "1.0.0",
   "type": "module",
-  "description": "لوحة إدارة المنصة (محلية فقط) لنظام الشركات",
+  "description": "لوحة إدارة المنصة لنظام الشركات (محليًا بدخول تلقائي، أو على Netlify بشاشة دخول)",
   "scripts": {
     "dev": "vite",
-    "typecheck": "tsc --noEmit -p tsconfig.json"
+    "typecheck": "tsc --noEmit -p tsconfig.json",
+    "build": "tsc --noEmit -p tsconfig.json && vite build"
   },
   "dependencies": {
     "@supabase/supabase-js": "^2.98.0",

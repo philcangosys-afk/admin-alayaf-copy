@@ -1,0 +1,18 @@
+# لوحة إدارة المنصة على Netlify.
+# المتغيران VITE_SUPABASE_URL وVITE_SUPABASE_ANON_KEY من Netlify: Site configuration > Environment variables.
+# لا تضع PLATFORM_ADMIN_EMAIL ولا PLATFORM_ADMIN_PASSWORD ولا مفتاح service_role في Netlify.
+[build]
+  command = "npm run build"
+  publish = "dist"
+
+[build.environment]
+  NODE_VERSION = "22"
+
+[[headers]]
+  for = "/*"
+  [headers.values]
+    X-Frame-Options = "DENY"
+    Content-Security-Policy = "frame-ancestors 'none'"
+    X-Content-Type-Options = "nosniff"
+    Referrer-Policy = "no-referrer"
+    X-Robots-Tag = "noindex, nofollow"

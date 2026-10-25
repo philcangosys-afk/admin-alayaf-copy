@@ -88,9 +88,32 @@ function platformAdminSession(env: Record<string, string>): Plugin {
   };
 }
 
-// لوحة إدارة المنصة تعمل على هذا الجهاز فقط: لا تُفتح على الشبكة ولا تُنشر.
+/**
+ * المفتاح في VITE_SUPABASE_ANON_KEY يدخل في كود المتصفح، فيجب أن يكون المفتاح العام.
+ * مفتاح سري (sb_secret_ أو service_role) يوقف التشغيل والبناء قبل أن يُنشر.
+ */
+function assertPublicKey(key: string) {
+  const value = key.trim();
+  const stop = () => {
+    throw new Error("VITE_SUPABASE_ANON_KEY فيه مفتاح سري (service_role / secret). ضع المفتاح العام anon أو publishable.");
+  };
+  if (value.startsWith("sb_secret_")) stop();
+  const payload = value.split(".")[1];
+  if (!payload) return;
+  let role = "";
+  try {
+    role = String(JSON.parse(Buffer.from(payload, "base64url").toString("utf8"))?.role ?? "");
+  } catch {
+    return;
+  }
+  if (role === "service_role") stop();
+}
+
+// خادم التطوير (npm run dev) على هذا الجهاز فقط ولا يُفتح على الشبكة، ومعه الدخول التلقائي.
+// النسخة المنشورة (npm run build ثم Netlify) بلا هذا الخادم: تطلب البريد وكلمة المرور، ولا تحوي PLATFORM_ADMIN_*.
 export default defineConfig(({ mode }) => {
   const env = loadEnv(mode, process.cwd(), "");
+  assertPublicKey(String(env.VITE_SUPABASE_ANON_KEY ?? ""));
   return {
     plugins: [react(), platformAdminSession(env)],
     server: { host: "127.0.0.1", port: PORT, strictPort: true, open: true, cors: false },

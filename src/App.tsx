@@ -1,5 +1,8 @@
-import { useCallback, useEffect, useMemo, useState, type ReactNode } from "react";
-import { api, bootSession, configMissing, errorText, type SaasStats } from "./api";
+import { useCallback, useEffect, useMemo, useState, type FormEvent, type ReactNode } from "react";
+import {
+  api, bootSession, configMissing, configMissingText, errorText, isLocalPanel, isSessionError, purgeStoredSession, signInPanel, signOutPanel,
+  supabase, type SaasStats,
+} from "./api";
 import { ShellContext, useRoute, type Shell } from "./shell";
 import {
   AlertIcon, BrandMark, BuildingIcon, CrownIcon, HomeIcon, InboxIcon, LayersIcon, MegaphoneIcon, MenuIcon, ReceiptIcon, RefreshIcon, ScrollIcon,
@@ -18,7 +21,108 @@ import Settings from "./pages/Settings";
 import Audit from "./pages/Audit";
 import Errors from "./pages/Errors";
 
-type Boot = { state: "loading" } | { state: "error"; message: string } | { state: "ready"; email: string };
+type Boot =
+  | { state: "loading" }
+  | { state: "error"; message: string }
+  | { state: "login"; message: string }
+  | { state: "ready"; email: string };
+
+/** بعد فتح الجلسة: الحساب يجب أن يكون في platform_admins، والدوال نفسها ترفض غيره على أي حال */
+async function verifyAdmin(email: string): Promise<Boot> {
+  try {
+    if (await api.isPlatformAdmin()) {
+      if (isLocalPanel) return { state: "ready", email };
+      // خروج من تبويب آخر أثناء التحقق: لا نفتح اللوحة بلا جلسة
+      const { data } = await supabase().auth.getSession();
+      if (!data.session) return { state: "login", message: "انتهت الجلسة. ادخل مرة أخرى." };
+      return { state: "ready", email };
+    }
+    const message = isLocalPanel
+      ? `الحساب ${email} ليس مدير منصة. أضفه في جدول platform_admins من SQL Editor.`
+      : `الحساب ${email} ليس مدير منصة.`;
+    if (isLocalPanel) return { state: "error", message };
+    await signOutPanel();
+    return { state: "login", message };
+  } catch (error) {
+    if (!isLocalPanel && isSessionError(error)) {
+      await signOutPanel();
+      return { state: "login", message: "انتهت الجلسة. ادخل مرة أخرى." };
+    }
+    return { state: "error", message: errorText(error) };
+  }
+}
+
+/** شاشة الدخول (الاستضافة فقط): كلمة المرور تذهب إلى Supabase مباشرة */
+function LoginCard({ message, onReady }: { message: string; onReady: (boot: Boot) => void }) {
+  const [email, setEmail] = useState("");
+  const [password, setPassword] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState(message);
+
+  const submit = async (event: FormEvent) => {
+    event.preventDefault();
+    if (busy) return;
+    setBusy(true);
+    setError("");
+    const result = await signInPanel(email, password);
+    if (!result.ok) {
+      setError(result.message);
+      setBusy(false);
+      return;
+    }
+    const next = await verifyAdmin(result.email);
+    if (next.state === "ready") {
+      onReady(next);
+      return;
+    }
+    // تعذر التحقق (اتصال أو خادم): لا تبقى جلسة محفوظة والشاشة شاشة دخول
+    if (next.state === "error") await signOutPanel();
+    setPassword("");
+    setError(next.state === "login" || next.state === "error" ? next.message : "");
+    setBusy(false);
+  };
+
+  return (
+    <div className="center-screen">
+      <form className="card narrow login-card" onSubmit={submit} noValidate>
+        <div className="login-head">
+          <BrandMark className="brand-mark" />
+          <div>
+            <h1 className="card-title">لوحة إدارة المنصة</h1>
+            <p className="muted">ادخل بحساب مدير المنصة.</p>
+          </div>
+        </div>
+        {error ? <p className="notice error" role="alert">{error}</p> : null}
+        <label className="field">
+          <span>البريد الإلكتروني</span>
+          <input
+            type="email"
+            dir="ltr"
+            autoComplete="username"
+            autoFocus
+            value={email}
+            disabled={busy}
+            onChange={(event) => setEmail(event.target.value)}
+          />
+        </label>
+        <label className="field">
+          <span>كلمة المرور</span>
+          <input
+            type="password"
+            dir="ltr"
+            autoComplete="current-password"
+            value={password}
+            disabled={busy}
+            onChange={(event) => setPassword(event.target.value)}
+          />
+        </label>
+        <button type="submit" className="btn btn-primary login-submit" disabled={busy}>
+          {busy ? "جاري الدخول..." : "دخول"}
+        </button>
+      </form>
+    </div>
+  );
+}
 
 type NavItem = { path: string; label: string; icon: (p: { className?: string }) => JSX.Element; count?: (s: SaasStats) => number };
 const NAV: Array<{ title: string; items: NavItem[] }> = [
@@ -64,8 +168,10 @@ const TITLES: Record<string, string> = {
 };
 
 /**
- * لوحة إدارة المنصة: تعمل على هذا الجهاز فقط (127.0.0.1)، وتدخل تلقائيًا بحساب مدير المنصة من .env.local
- * (كلمة المرور يقرؤها خادم اللوحة المحلي ولا تصل إلى المتصفح).
+ * لوحة إدارة المنصة.
+ * - على هذا الجهاز (127.0.0.1): تدخل تلقائيًا بحساب مدير المنصة من .env.local
+ *   (كلمة المرور يقرؤها خادم اللوحة المحلي ولا تصل إلى المتصفح).
+ * - على الاستضافة: شاشة دخول بالبريد وكلمة المرور، وزر تسجيل خروج.
  * كل العمليات عبر دوال platform_* في قاعدة البيانات، وهي تتحقق بنفسها أن الحساب مدير منصة وتسجّل كل تعديل.
  */
 export default function App() {
@@ -76,11 +182,11 @@ export default function App() {
   const [tick, setTick] = useState(0);
   const [menuOpen, setMenuOpen] = useState(false);
 
-  // الدخول التلقائي بحساب مدير المنصة
+  // بداية الجلسة: تلقائية على هذا الجهاز، أو الجلسة المحفوظة / شاشة الدخول على الاستضافة
   useEffect(() => {
     const missing = configMissing();
     if (missing.length) {
-      setBoot({ state: "error", message: `أكمل ملف .env.local: ${missing.join("، ")}` });
+      setBoot({ state: "error", message: configMissingText(missing) });
       return;
     }
     let active = true;
@@ -88,23 +194,37 @@ export default function App() {
       const session = await bootSession();
       if (!active) return;
       if (!session.ok) {
-        setBoot({ state: "error", message: session.message });
+        setBoot(session.login ? { state: "login", message: session.message } : { state: "error", message: session.message });
         return;
       }
-      try {
-        const isAdmin = await api.isPlatformAdmin();
-        if (!active) return;
-        if (!isAdmin) {
-          setBoot({ state: "error", message: `الحساب ${session.email} ليس مدير منصة. أضفه في جدول platform_admins من SQL Editor.` });
-          return;
-        }
-      } catch (error) {
-        if (active) setBoot({ state: "error", message: errorText(error) });
-        return;
-      }
-      setBoot({ state: "ready", email: session.email });
+      const next = await verifyAdmin(session.email);
+      if (active) setBoot(next);
     })();
     return () => { active = false; };
+  }, []);
+
+  // الاستضافة: انتهاء الجلسة أثناء العمل (أو الخروج من تبويب آخر) يعيد إلى شاشة الدخول ويمسح جلسة هذا التبويب
+  useEffect(() => {
+    if (isLocalPanel || configMissing().length) return;
+    const { data } = supabase().auth.onAuthStateChange((event) => {
+      if (event !== "SIGNED_OUT") return;
+      purgeStoredSession();
+      setBoot((prev) =>
+        prev.state === "ready" || prev.state === "error" ? { state: "login", message: "انتهت الجلسة. ادخل مرة أخرى." } : prev,
+      );
+    });
+    return () => data.subscription.unsubscribe();
+  }, []);
+
+  // الخروج قد يأخذ ثواني دون اتصال (يحاول Supabase تجديد الجلسة أولًا): الزر معطّل حتى ينتهي
+  const [signingOut, setSigningOut] = useState(false);
+  const signOut = useCallback(async () => {
+    setSigningOut(true);
+    await signOutPanel();
+    setSigningOut(false);
+    setStats(null);
+    setStatsError("");
+    setBoot({ state: "login", message: "" });
   }, []);
 
   const reloadStats = useCallback(async () => {
@@ -128,13 +248,27 @@ export default function App() {
   if (boot.state === "loading") {
     return <div className="center-screen">جاري الدخول إلى لوحة المنصة...</div>;
   }
+  if (boot.state === "login") {
+    return <LoginCard message={boot.message} onReady={setBoot} />;
+  }
   if (boot.state === "error") {
     return (
       <div className="center-screen">
         <div className="card narrow">
           <h1 className="card-title">لوحة إدارة المنصة</h1>
           <p className="notice error">{boot.message}</p>
-          <p className="muted">بعد التعديل أعد تحميل الصفحة.</p>
+          {isLocalPanel ? (
+            <p className="muted">بعد التعديل أعد تحميل الصفحة.</p>
+          ) : (
+            <div className="row-end">
+              {configMissing().length ? null : (
+                <button type="button" className="btn" disabled={signingOut} onClick={() => void signOut()}>
+                  {signingOut ? "جاري الخروج..." : "تسجيل الخروج"}
+                </button>
+              )}
+              <button type="button" className="btn btn-primary" disabled={signingOut} onClick={() => window.location.reload()}>إعادة المحاولة</button>
+            </div>
+          )}
         </div>
       </div>
     );
@@ -190,9 +324,18 @@ export default function App() {
             </nav>
           ))}
           <div className="sidebar-foot">
-            محلية فقط على هذا الجهاز
-            <br />
+            {isLocalPanel ? (
+              <>
+                محلية فقط على هذا الجهاز
+                <br />
+              </>
+            ) : null}
             <span dir="ltr">{boot.email}</span>
+            {!isLocalPanel ? (
+              <button type="button" className="sidebar-signout" disabled={signingOut} onClick={() => void signOut()}>
+                {signingOut ? "جاري الخروج..." : "تسجيل الخروج"}
+              </button>
+            ) : null}
           </div>
         </aside>
 
